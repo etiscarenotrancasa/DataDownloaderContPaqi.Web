@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+    "profiles": {
+      "http": {
+        "commandName": "Project",
+        "dotnetRunMessages": true,
+        "launchBrowser": true,
+        "applicationUrl": "http://localhost:5229",
+        "environmentVariables": {
+          "ASPNETCORE_ENVIRONMENT": "Development",
+          "TCAMN_SERVER": "172.24.16.26",
+          "TCAMN_DB_USER": "Query_runner",
+          "TCAMN_TRUSTED_SERVER_CERTIFICATE": "Yes"
+        }
+      }
+    }
+  }

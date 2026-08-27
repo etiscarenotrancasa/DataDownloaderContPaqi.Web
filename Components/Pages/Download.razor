@@ -1,0 +1,230 @@
+@page "/"
+@rendermode InteractiveServer
+@using DataDownloaderContPaqi.Web.Models
+@using DataDownloaderContPaqi.Web.Services
+@inject DataDownloaderService Downloader
+@inject JobStore Store
+@inject NavigationManager Nav
+
+<PageTitle>Data Downloader ContPaqi</PageTitle>
+
+@if (state == State.Idle)
+{
+    <div class="card">
+        <h2>GL Transaction Export</h2>
+
+<div class="field">
+            <label>Company</label>
+            <select @bind="parameters.Company">
+                @foreach (var company in DownloadParameters.CompanyDatabases.Keys)
+                {
+                    <option value="@company">@company</option>
+                }
+            </select>
+        </div>
+
+        <div class="field">
+            <label>Begin Date</label>
+            <input type="date" @bind="parameters.BeginDate" @bind:format="yyyy-MM-dd" />
+        </div>
+
+        <div class="field">
+            <label>End Date</label>
+            <input type="date" @bind="parameters.EndDate" @bind:format="yyyy-MM-dd" />
+        </div>
+
+        <div class="field checkbox-field">
+            <input type="checkbox" id="glRange" @bind="parameters.UseGLRange" />
+            <label for="glRange">Specify GL Account Range</label>
+        </div>
+
+        @if (parameters.UseGLRange)
+        {
+            <div class="field">
+                <label>Beginning Account</label>
+                <input type="text" @bind="parameters.GLBegin" placeholder="e.g. 6170-99-000" />
+            </div>
+            <div class="field">
+                <label>Ending Account</label>
+                <input type="text" @bind="parameters.GLEnd" placeholder="e.g. 6170-99-999" />
+            </div>
+        }
+
+        @if (parameters.ReportType == ReportType.GLTransactions)
+        {
+            <div class="field">
+                <label>Journal Entry</label>
+                <input type="text" @bind="parameters.JournalEntry" placeholder="e.g. 2026-07-PMTRX-98765" />
+            </div>
+
+        }
+
+        @if (errorMessage is not null)
+        {
+            <p class="error">@errorMessage</p>
+        }
+
+        <button class="btn-primary" @onclick="StartDownload">Download</button>
+    </div>
+}
+else if (state == State.Running)
+{
+    <div class="card">
+        <h2>Downloading...</h2>
+        <p class="progress-text">
+            @if (progress.Total > 0)
+            {
+                <span>Processed @progress.Processed of @progress.Total records</span>
+            }
+            else
+            {
+                <span>Connecting to database...</span>
+            }
+        </p>
+        <p class="dots">@dots</p>
+        <button class="btn-secondary" @onclick="Cancel">Cancel</button>
+    </div>
+}
+else if (state == State.Complete)
+{
+    <div class="card">
+        <h2>Download Complete</h2>
+        <p>@progress.Total records exported successfully.</p>
+        <div class="actions">
+            <a class="btn-primary" href="/api/download/@jobId" download="@fileName">Save Excel File</a>
+            <button class="btn-secondary" @onclick="Reset">New Download</button>
+        </div>
+    </div>
+}
+else if (state == State.Error)
+{
+    <div class="card">
+        <h2>Download Failed</h2>
+        <p class="error">@errorMessage</p>
+        <button class="btn-secondary" @onclick="Reset">Try Again</button>
+    </div>
+}
+else if (state == State.NoResults)
+{
+    <div class="card">
+        <h2>No Results</h2>
+        <p>No GL transactions found for the selected parameters.</p>
+        <button class="btn-secondary" @onclick="Reset">New Download</button>
+    </div>
+}
+
+@code {
+    private enum State { Idle, Running, Complete, Error, NoResults }
+
+    private State state = State.Idle;
+    private DownloadParameters parameters = new();
+    private DownloadProgress progress = new(0, 0);
+    private string? errorMessage;
+    private string dots = ".";
+    private Guid jobId;
+    private string fileName = "data.xlsx";
+    private CancellationTokenSource? cts;
+    private System.Threading.Timer? dotsTimer;
+
+    private void StartDownload()
+    {
+        errorMessage = null;
+
+        if (parameters.EndDate < parameters.BeginDate)
+        {
+            errorMessage = "End date must be on or after begin date.";
+            return;
+        }
+
+        if (parameters.UseGLRange)
+        {
+            if (string.IsNullOrWhiteSpace(parameters.GLBegin) || string.IsNullOrWhiteSpace(parameters.GLEnd))
+            {
+                errorMessage = "Please enter both beginning and ending account numbers, or uncheck the range option.";
+                return;
+            }
+            if (!System.Text.RegularExpressions.Regex.IsMatch(parameters.GLBegin, @"^[0-9\-]+$") ||
+                !System.Text.RegularExpressions.Regex.IsMatch(parameters.GLEnd, @"^[0-9\-]+$"))
+            {
+                errorMessage = "GL account numbers must contain only digits and dashes.";
+                return;
+            }
+        }
+
+        state = State.Running;
+        cts = new CancellationTokenSource();
+        dots = ".";
+
+        dotsTimer = new System.Threading.Timer(_ =>
+        {
+            dots = dots.Length >= 30 ? "." : dots + ".";
+            InvokeAsync(StateHasChanged);
+        }, null, 0, 1000);
+
+        _ = RunDownloadAsync(cts.Token);
+    }
+
+    private async Task RunDownloadAsync(CancellationToken ct)
+    {
+        try
+        {
+            var prog = new Progress<DownloadProgress>(p =>
+            {
+                progress = p;
+                InvokeAsync(StateHasChanged);
+            });
+
+            var bytes = await Downloader.DownloadAsync(parameters, prog, ct);
+
+            dotsTimer?.Dispose();
+
+            if (bytes.Length == 0 || progress.Total == 0)
+            {
+                state = State.NoResults;
+            }
+            else
+            {
+                fileName = $"{parameters.Company}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+                jobId = Store.Store(bytes, fileName);
+                state = State.Complete;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            state = State.Idle;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+            state = State.Error;
+        }
+        finally
+        {
+            dotsTimer?.Dispose();
+            dotsTimer = null;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void Cancel()
+    {
+        cts?.Cancel();
+        dotsTimer?.Dispose();
+        dotsTimer = null;
+    }
+
+    private void Reset()
+    {
+        state = State.Idle;
+        progress = new(0, 0);
+        errorMessage = null;
+        dots = ".";
+    }
+
+    public void Dispose()
+    {
+        cts?.Cancel();
+        dotsTimer?.Dispose();
+    }
+}

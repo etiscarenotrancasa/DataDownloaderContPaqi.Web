@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+
+# .NET user secrets and local config
+appsettings.Development.json
+*.user
+
+# Environment / secrets
+.env
+
+# Rider / VS / VSCode
+.idea/
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS
+.DS_Store
+Thumbs.db
