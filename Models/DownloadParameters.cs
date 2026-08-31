@@ -20,7 +20,7 @@ public class DownloadParameters
 
     public static readonly Dictionary<string, string> CompanyDatabases = new()
     {
-        ["Servicios Tractomotrices"]        = "ctASERVICIOS_TRACTOMOTRICES_SA_DE_C",
+        ["Servicios Tractomotrices"]        = "ctSERVICIOS_TRACTOMOTRICES_SA_DE_C2",
         ["Centro Regional de Capacitacion"] = "ctCENTRO_REGIONAL_DE_CAPACITACION_2",
         ["SecureFleet Innovations"]         = "ctSECUREFLEET_INNOVATIONS",
         ["Trancasa Logistica de Mexico"]    = "ctTRANCASA_LOGISTICA_DE_MEXICO",
