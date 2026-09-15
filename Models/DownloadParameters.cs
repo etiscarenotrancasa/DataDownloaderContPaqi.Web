@@ -24,6 +24,7 @@ public class DownloadParameters
         ["Centro Regional de Capacitacion"] = "ctCENTRO_REGIONAL_DE_CAPACITACION_2",
         ["SecureFleet Innovations"]         = "ctSECUREFLEET_INNOVATIONS",
         ["Trancasa Logistica de Mexico"]    = "ctTRANCASA_LOGISTICA_DE_MEXICO",
+        ["Parador Logistico Autorizado"]    = "ctPARADORLOGISTICO_AUTORIZADO_S_DE_R",
     };
 
     public string? DatabaseName =>
