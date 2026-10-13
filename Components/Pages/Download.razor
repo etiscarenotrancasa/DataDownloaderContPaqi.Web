@@ -59,6 +59,15 @@
 
         }
 
+        <div class="field">
+            <label>Export Format</label>
+            <div class="radio-field">
+                <label><input type="radio" name="format" checked="@(parameters.ExportFormat == ExportFormat.Excel)" @onchange="@(() => parameters.ExportFormat = ExportFormat.Excel)" /> Excel (.xlsx)</label>
+                <label><input type="radio" name="format" checked="@(parameters.ExportFormat == ExportFormat.Csv)" @onchange="@(() => parameters.ExportFormat = ExportFormat.Csv)" /> CSV (.csv)</label>
+                <label><input type="radio" name="format" checked="@(parameters.ExportFormat == ExportFormat.Txt)" @onchange="@(() => parameters.ExportFormat = ExportFormat.Txt)" /> Text (.txt)</label>
+            </div>
+        </div>
+
         @if (errorMessage is not null)
         {
             <p class="error">@errorMessage</p>
@@ -91,7 +100,7 @@ else if (state == State.Complete)
         <h2>Download Complete</h2>
         <p>@progress.Total records exported successfully.</p>
         <div class="actions">
-            <a class="btn-primary" href="/api/download/@jobId" download="@fileName">Save Excel File</a>
+            <a class="btn-primary" href="/api/download/@jobId" download="@fileName">Save File</a>
             <button class="btn-secondary" @onclick="Reset">New Download</button>
         </div>
     </div>
@@ -174,18 +183,18 @@ else if (state == State.NoResults)
                 InvokeAsync(StateHasChanged);
             });
 
-            var bytes = await Downloader.DownloadAsync(parameters, prog, ct);
+            var result = await Downloader.DownloadAsync(parameters, prog, ct);
 
             dotsTimer?.Dispose();
 
-            if (bytes.Length == 0 || progress.Total == 0)
+            if (result.Data.Length == 0 || progress.Total == 0)
             {
                 state = State.NoResults;
             }
             else
             {
-                fileName = $"{parameters.Company}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
-                jobId = Store.Store(bytes, fileName);
+                fileName = $"{parameters.Company}_{DateTime.Now:yyyyMMdd_HHmmss}{result.Extension}";
+                jobId = Store.Store(result.Data, fileName, result.ContentType);
                 state = State.Complete;
             }
         }

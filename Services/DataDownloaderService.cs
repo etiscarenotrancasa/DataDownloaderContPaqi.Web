@@ -56,7 +56,7 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
         return sb.ToString();
     }
 
-    public async Task<byte[]> DownloadAsync(
+    public async Task<(byte[] Data, string ContentType, string Extension)> DownloadAsync(
         DownloadParameters p,
         IProgress<DownloadProgress> progress,
         CancellationToken ct = default)
@@ -66,23 +66,19 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
 
         var connStr = BuildConnectionString(dbName);
 
-        ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-        using var excel = new ExcelPackage();
-
         using var connection = new SqlConnection(connStr);
         await connection.OpenAsync(ct);
 
         return p.ReportType == ReportType.GLTransactions
-            ? await DownloadGLTransactionsAsync(excel, connection, p, progress, logger, ct)
-            : await DownloadAuxiliaresCatalogoAsync(excel, connection, dbName, p, progress, logger, ct);
+            ? await DownloadGLTransactionsAsync(connection, p, progress, logger, ct)
+            : await DownloadAuxiliaresCatalogoAsync(connection, dbName, p, progress, logger, ct);
     }
 
     // ======================================================================
     // Reporte: Movimientos, Auxiliares del Catálogo (agrupado por cuenta)
     // ======================================================================
 
-    private static async Task<byte[]> DownloadAuxiliaresCatalogoAsync(
-        ExcelPackage excel,
+    private static async Task<(byte[] Data, string ContentType, string Extension)> DownloadAuxiliaresCatalogoAsync(
         SqlConnection connection,
         string dbName,
         DownloadParameters p,
@@ -100,8 +96,6 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
         var beginDate = p.BeginDate.Date;
         var endDateExclusive = p.EndDate.Date.AddDays(1);
 
-        var ws = excel.Workbook.Worksheets.Add("Movimientos");
-
         var razonSocial = await ExecuteScalarStringAsync(
             connection, "SELECT TOP 1 RazonSocial FROM dbo.Parametros;", ct) ?? dbName;
         var monedaNombre = await ExecuteScalarStringAsync(
@@ -118,11 +112,22 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
         progress.Report(new DownloadProgress(0, totalRecords));
 
         if (totalRecords == 0)
-            return Array.Empty<byte>();
+            return ([], "", "");
 
-        WriteReportHeader(ws, razonSocial, monedaNombre, p.BeginDate, p.EndDate);
+        var flatHeaders = new[] { "Cuenta", "NombreCuenta", "Fecha", "TipoPoliza", "Folio", "Concepto", "Referencia", "Cargo", "Abono", "Saldo" };
+        var flatRows = new List<string[]>();
 
-        int row = 9; // row 8 is the fixed spacer before the first account
+        ExcelPackage? excel = null;
+        ExcelWorksheet? ws = null;
+        if (p.ExportFormat == ExportFormat.Excel)
+        {
+            ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+            excel = new ExcelPackage();
+            ws = excel.Workbook.Worksheets.Add("Movimientos");
+            WriteReportHeader(ws, razonSocial, monedaNombre, p.BeginDate, p.EndDate);
+        }
+
+        int row = 9;
         string? currentCodigo = null;
         decimal runningBalance = 0, acctCargo = 0, acctAbono = 0;
         decimal grandCargo = 0, grandAbono = 0, grandBalance = 0;
@@ -154,21 +159,27 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
                 ct.ThrowIfCancellationRequested();
 
                 var codigo = rdr.GetString(0);
+                var nombre = rdr.GetString(1);
 
                 if (codigo != currentCodigo)
                 {
-                    if (currentCodigo is not null)
+                    if (currentCodigo is not null && ws is not null)
                     {
                         row = WriteAccountTotalRow(ws, row, acctCargo, acctAbono, runningBalance);
                         grandBalance += runningBalance;
-                        row += 2; // spacer between account sections
+                        row += 2;
+                    }
+                    else if (currentCodigo is not null)
+                    {
+                        grandBalance += runningBalance;
                     }
 
                     currentCodigo = codigo;
                     runningBalance = openingBalances.GetValueOrDefault(codigo, 0m);
                     acctCargo = 0;
                     acctAbono = 0;
-                    row = WriteAccountHeaderRow(ws, row, codigo, rdr.GetString(1), runningBalance);
+                    if (ws is not null)
+                        row = WriteAccountHeaderRow(ws, row, codigo, nombre, runningBalance);
                 }
 
                 var fecha = rdr.GetDateTime(2);
@@ -176,18 +187,29 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
                 var folio = rdr.GetInt32(4);
                 var concepto = CleanText(rdr.IsDBNull(5) ? null : rdr.GetString(5));
                 var referencia = CleanText(rdr.IsDBNull(6) ? null : rdr.GetString(6));
-                bool esCargo = !rdr.IsDBNull(7) && !rdr.GetBoolean(7); // TipoMovto: 0=Cargo, 1=Abono
+                bool esCargo = !rdr.IsDBNull(7) && !rdr.GetBoolean(7);
                 decimal importe = rdr.IsDBNull(8) ? 0 : (decimal)rdr.GetDouble(8);
 
                 runningBalance += esCargo ? importe : -importe;
                 if (esCargo) { acctCargo += importe; grandCargo += importe; }
                 else { acctAbono += importe; grandAbono += importe; }
 
-                row = WriteMovementRow(
-                    ws, row, fecha, tipoPoliza, folio, concepto, referencia,
-                    esCargo ? importe : (decimal?)null,
-                    esCargo ? (decimal?)null : importe,
-                    runningBalance);
+                if (ws is not null)
+                {
+                    row = WriteMovementRow(
+                        ws, row, fecha, tipoPoliza, folio, concepto, referencia,
+                        esCargo ? importe : (decimal?)null,
+                        esCargo ? (decimal?)null : importe,
+                        runningBalance);
+                }
+
+                flatRows.Add([
+                    FormatAccountCode(codigo), nombre, SpanishDate(fecha), tipoPoliza,
+                    folio.ToString(), concepto, referencia,
+                    esCargo ? importe.ToString("F2") : "",
+                    esCargo ? "" : importe.ToString("F2"),
+                    runningBalance.ToString("F2")
+                ]);
 
                 fetched++;
                 if (fetched % 200 == 0)
@@ -197,18 +219,34 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
 
         if (currentCodigo is not null)
         {
-            row = WriteAccountTotalRow(ws, row, acctCargo, acctAbono, runningBalance);
-            grandBalance += runningBalance;
-            row += 3; // spacer before the grand total
+            if (ws is not null)
+            {
+                row = WriteAccountTotalRow(ws, row, acctCargo, acctAbono, runningBalance);
+                grandBalance += runningBalance;
+                row += 3;
+            }
+            else
+            {
+                grandBalance += runningBalance;
+            }
         }
 
-        WriteGrandTotalRow(ws, row, grandCargo, grandAbono, grandBalance);
         progress.Report(new DownloadProgress(totalRecords, totalRecords));
 
-        ws.Column(1).Width = 37; ws.Column(2).Width = 31; ws.Column(3).Width = 8; ws.Column(4).Width = 47;
-        ws.Column(5).Width = 20; ws.Column(6).Width = 14; ws.Column(7).Width = 14; ws.Column(8).Width = 16;
+        if (excel is not null && ws is not null)
+        {
+            WriteGrandTotalRow(ws, row, grandCargo, grandAbono, grandBalance);
+            ws.Column(1).Width = 37; ws.Column(2).Width = 31; ws.Column(3).Width = 8; ws.Column(4).Width = 47;
+            ws.Column(5).Width = 20; ws.Column(6).Width = 14; ws.Column(7).Width = 14; ws.Column(8).Width = 16;
+            var bytes = excel.GetAsByteArray();
+            excel.Dispose();
+            return (bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx");
+        }
 
-        return excel.GetAsByteArray();
+        excel?.Dispose();
+        return p.ExportFormat == ExportFormat.Csv
+            ? (GenerateCsv(flatHeaders, flatRows), "text/csv", ".csv")
+            : (GenerateTxt(flatHeaders, flatRows), "text/plain", ".txt");
     }
 
     private static async Task<string?> ExecuteScalarStringAsync(SqlConnection conn, string sql, CancellationToken ct)
@@ -546,8 +584,7 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
             b.Fecha, b.Ejercicio, b.Periodo, b.TipoPol, b.Folio, b.NumMovto, b.IdMovimiento;
         ";
 
-    private static async Task<byte[]> DownloadGLTransactionsAsync(
-        ExcelPackage excel,
+    private static async Task<(byte[] Data, string ContentType, string Extension)> DownloadGLTransactionsAsync(
         SqlConnection connection,
         DownloadParameters p,
         IProgress<DownloadProgress> progress,
@@ -573,10 +610,19 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
         progress.Report(new DownloadProgress(0, totalRecords));
 
         if (totalRecords == 0)
-            return Array.Empty<byte>();
+            return ([], "", "");
 
-        var ws = excel.Workbook.Worksheets.Add("GL_Trx");
-        WriteGLTransactionsHeader(ws);
+        var flatRows = new List<string[]>();
+
+        ExcelPackage? excel = null;
+        ExcelWorksheet? ws = null;
+        if (p.ExportFormat == ExportFormat.Excel)
+        {
+            ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+            excel = new ExcelPackage();
+            ws = excel.Workbook.Worksheets.Add("GL_Trx");
+            WriteGLTransactionsHeader(ws);
+        }
 
         int row = 2;
         int fetched = 0;
@@ -592,8 +638,29 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
             {
                 ct.ThrowIfCancellationRequested();
 
-                WriteGLTransactionRow(ws, row, rdr);
-                row++;
+                if (ws is not null)
+                {
+                    WriteGLTransactionRow(ws, row, rdr);
+                    row++;
+                }
+
+                var values = new string[GLTransactionsColumns.Length];
+                for (int i = 0; i < GLTransactionsColumns.Length; i++)
+                {
+                    if (rdr.IsDBNull(i))
+                        values[i] = "";
+                    else if (i == 3) // Account_Number
+                        values[i] = FormatAccountCode(rdr[i]?.ToString() ?? "");
+                    else if (i is 5 or 6) // Debit/Credit Amount
+                        values[i] = ((decimal)rdr.GetDouble(i)).ToString("F2");
+                    else if (i is 21 or 22) // Originating Debit/Credit
+                        values[i] = ((decimal)rdr.GetDouble(i)).ToString("F5");
+                    else if (i == 23) // Exchange_Rate
+                        values[i] = rdr.GetDouble(i).ToString("F7");
+                    else
+                        values[i] = rdr[i]?.ToString() ?? "";
+                }
+                flatRows.Add(values);
 
                 fetched++;
                 if (fetched % 200 == 0)
@@ -602,9 +669,19 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
         }
 
         progress.Report(new DownloadProgress(totalRecords, totalRecords));
-        SetGLTransactionsColumnWidths(ws);
 
-        return excel.GetAsByteArray();
+        if (excel is not null && ws is not null)
+        {
+            SetGLTransactionsColumnWidths(ws);
+            var bytes = excel.GetAsByteArray();
+            excel.Dispose();
+            return (bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx");
+        }
+
+        excel?.Dispose();
+        return p.ExportFormat == ExportFormat.Csv
+            ? (GenerateCsv(GLTransactionsColumns, flatRows), "text/csv", ".csv")
+            : (GenerateTxt(GLTransactionsColumns, flatRows), "text/plain", ".txt");
     }
 
     private static async Task<int> CountGLTransactionsAsync(
@@ -714,5 +791,35 @@ public class DataDownloaderService(IConfiguration config, ILogger<DataDownloader
         ws.Column(23).Width = 15; // Originating_Credit_Amount
         ws.Column(24).Width = 13; // Exchange_Rate
         ws.Column(25).Width = 20; // Currency_Description
+    }
+
+    // ======================================================================
+    // CSV / TXT generation helpers
+    // ======================================================================
+
+    private static byte[] GenerateCsv(string[] headers, List<string[]> rows)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(string.Join(",", headers.Select(CsvEscape)));
+        foreach (var row in rows)
+            sb.AppendLine(string.Join(",", row.Select(CsvEscape)));
+        return [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(sb.ToString())];
+    }
+
+    private static string CsvEscape(string? field)
+    {
+        var f = field ?? "";
+        if (f.Contains(',') || f.Contains('"') || f.Contains('\n') || f.Contains('\r'))
+            return "\"" + f.Replace("\"", "\"\"") + "\"";
+        return f;
+    }
+
+    private static byte[] GenerateTxt(string[] headers, List<string[]> rows)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine(string.Join("\t", headers));
+        foreach (var row in rows)
+            sb.AppendLine(string.Join("\t", row));
+        return [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes(sb.ToString())];
     }
 }

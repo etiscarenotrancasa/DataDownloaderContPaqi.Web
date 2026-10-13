@@ -6,25 +6,27 @@ namespace DataDownloaderContPaqi.Web.Services;
 // Entries are removed on first retrieval to avoid unbounded growth.
 public class JobStore
 {
-    private readonly ConcurrentDictionary<Guid, (byte[] Data, string FileName)> _jobs = new();
+    private readonly ConcurrentDictionary<Guid, (byte[] Data, string FileName, string ContentType)> _jobs = new();
 
-    public Guid Store(byte[] data, string fileName)
+    public Guid Store(byte[] data, string fileName, string contentType)
     {
         var id = Guid.NewGuid();
-        _jobs[id] = (data, fileName);
+        _jobs[id] = (data, fileName, contentType);
         return id;
     }
 
-    public bool TryGet(Guid id, out byte[] data, out string fileName)
+    public bool TryGet(Guid id, out byte[] data, out string fileName, out string contentType)
     {
         if (_jobs.TryGetValue(id, out var entry))
         {
             data = entry.Data;
             fileName = entry.FileName;
+            contentType = entry.ContentType;
             return true;
         }
         data = [];
         fileName = string.Empty;
+        contentType = string.Empty;
         return false;
     }
 

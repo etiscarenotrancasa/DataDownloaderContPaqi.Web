@@ -37,14 +37,11 @@ app.MapRazorComponents<App>()
 // Minimal API: serve completed job file and remove it from the store
 app.MapGet("/api/download/{jobId:guid}", (Guid jobId, JobStore store) =>
 {
-    if (!store.TryGet(jobId, out var bytes, out var fileName))
+    if (!store.TryGet(jobId, out var bytes, out var fileName, out var contentType))
         return Results.NotFound("Download link expired or not found.");
 
     store.Remove(jobId);
-    return Results.File(
-        bytes,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        fileName);
+    return Results.File(bytes, contentType, fileName);
 });
 
 app.Run();

@@ -6,6 +6,13 @@ public enum ReportType
     GLTransactions,
 }
 
+public enum ExportFormat
+{
+    Excel,
+    Csv,
+    Txt,
+}
+
 public class DownloadParameters
 {
     public string Company { get; set; } = "Centro Regional de Capacitacion";
@@ -17,6 +24,7 @@ public class DownloadParameters
     public string? GLEnd { get; set; }
     public string? JournalEntry { get; set; }
     public string? OriginalMasterName { get; set; }
+    public ExportFormat ExportFormat { get; set; } = ExportFormat.Excel;
 
     public static readonly Dictionary<string, string> CompanyDatabases = new()
     {
